@@ -153,7 +153,7 @@ def register():
 
 
 def unregister():
-    for c in classes:
+    for cls in classes:
         bpy.utils.unregister_class(cls)
 
 
