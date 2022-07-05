@@ -159,41 +159,58 @@ def prepare_mesh(context, ob, size, canvas, clip):
 
         me.update()
         ob["is_prepared"] = True
+
         # create the uv-project modifier
-        if not ob.modifiers.get("UVProject"):
-            projector = ob.modifiers.new(name="UVProject", type="UV_PROJECT")
-            projector.uv_layer = "projection"
-            projector.aspect_x = clip.size[0]
-            projector.aspect_y = clip.size[1]
-            projector.projectors[0].object = bpy.data.objects["Camera"]
-            projector.uv_layer = "projection"
+        if ob.modifiers.get("UVProject"):
+            print("Projector already setup")
+            return
+        projector = ob.modifiers.new(name="UVProject", type="UV_PROJECT")
+        projector.uv_layer = "projection"
+        projector.aspect_x = clip.size[0]
+        projector.aspect_y = clip.size[1]
+        projector.projectors[0].object = bpy.data.objects["Camera"]
+        projector.uv_layer = "projection"
 
 
 def change_viewport_background_for_painting(context, clip):
     # prepare the viewport for painting
-    # changing from movie to image will make it updates.
+    # if there is no image, create one
+    # if there is one, change movieclip to images
     space = context.space_data
+    scene = context.scene
+    camera = scene.camera
+    cam = camera.data
+    cam.show_background_images = True
 
-    cam = context.scene.camera
-    for img in cam.background_images:
-        if img.source == 'MOVIE_CLIP':
-            path = img.clip.filepath
-            length = img.clip.frame_duration
-            start = img.clip.frame_start
-            offset = img.clip.frame_offset
-            if bpy.data.images.get(clip.name):
-                clipimage = bpy.data.images[clip.name]
-            else:
-                clipimage = bpy.data.images.load(path)
-            print(clipimage)
+    # changing from movie to image will make it updates.
+    bgpic = None
 
-            img.show_on_foreground = True
-            img.source = "IMAGE"
-            img.image = clipimage
-            img.image.colorspace_settings.name = clip.colorspace_settings.name
-            backimg = img.image_user
+    if not cam.background_images:
+        bgpic = cam.background_images.new()
+    else:
+        for img in cam.background_images:
+            if img.source != 'MOVIE_CLIP':
+                if img.image.filepath == clip.filepath:
+                    bgpic = img
+                else:
+                    continue
+            bgpic = img
+            break
 
-            configure_video_image(context, clip, backimg)
+    bgpic.source = 'IMAGE'
+
+    if bpy.data.images.get(clip.name):
+        clipimage = bpy.data.images[clip.name]
+    else:
+        clipimage = bpy.data.images.load(path)
+
+    bgpic.show_on_foreground = True
+    bgpic.image = clipimage
+    bgpic.image.filepath = clip.filepath
+    bgpic.image_user.frame_start = clip.frame_start
+    bgpic.image_user.frame_duration = clip.frame_duration
+    bgpic.image_user.frame_offset = clip.frame_offset
+    bgpic.image.colorspace_settings.name = clip.colorspace_settings.name
 
 
 def set_cleanplate_brush(context, clip, canvas, ob):
@@ -205,10 +222,9 @@ def set_cleanplate_brush(context, clip, canvas, ob):
     ps.brush.strength = 1
     ps.use_clone_layer = True
     ps.mode = "IMAGE"
-    ps.canvas = canvas
     ps.clone_image = bpy.data.images[clip.name]
+    me.uv_layer_clone = me.uv_layers.get("projection")
     ps.use_normal_falloff = False
-    me.uv_texture_clone = me.uv_textures.get("projection")
 
 
 def prepare_clean_bake_mat(context, ob, clip, size, movietype):
@@ -275,7 +291,7 @@ def ma_baker(context):
     print("hello")
 
 
-def set_baked_mat(context, ob, clip, canvas, movietype):
+def setup_cleaned_material(context, ob, clip, canvas, movietype):
     materials = bpy.data.materials
     clean_mat = f'clean_material_{ob.name}'
 
@@ -428,7 +444,7 @@ class VIEW3D_OT_texture_extraction_setup(bpy.types.Operator):
 
         ma_baker(context)
 
-        set_baked_mat(context, cleaned_object, clip, canvas, movietype)
+        setup_cleaned_material(context, cleaned_object, clip, canvas, movietype)
 
         return {"FINISHED"}
 
@@ -459,11 +475,9 @@ class VIEW3D_OT_cleanplate_painter_setup(bpy.types.Operator):
             canvas = images[clean_name]
 
         prepare_mesh(context, cleaned_object, size, canvas, clip)
+        setup_cleaned_material(context, cleaned_object, clip, canvas, movietype)
         change_viewport_background_for_painting(context, clip)
         set_cleanplate_brush(context, clip, canvas, cleaned_object)
-
-        context.space_data.viewport_shade = "SOLID"
-        context.space_data.show_textured_solid = True
 
         if not context.object.mode == "TEXTURE_PAINT":
             bpy.ops.object.mode_set(mode="TEXTURE_PAINT")
