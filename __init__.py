@@ -56,6 +56,7 @@ def get_location(hooks):
 
 
 def create_canvas_object(context, name, hooks, cleanobject, cams):
+    scene = context.scene
     from bpy_extras.io_utils import unpack_list
     # get all locations of the hooks in the list
     coords = get_location(hooks)
@@ -67,8 +68,8 @@ def create_canvas_object(context, name, hooks, cleanobject, cams):
     ob = bpy.data.objects.new(name, me)
     ob.location = (0, 0, 0)
     # link it to the scene and make it active
-    bpy.context.scene.objects.link(ob)
-    bpy.context.scene.objects.active = ob
+    scene.objects.link(ob)
+    scene.objects.active = ob
     ob.layers = [True] + [False] * 19
     # go into edit mode, select all vertices and create the face
     if not context.object.mode == "EDIT":
@@ -156,14 +157,6 @@ def prepare_mesh(context, ob, size, canvas, clip):
             me.uv_layers.new(name="UVMap")
             me.uv_layers.new(name="projection")
 
-        # put a canvas onto the mesh for bake and paint
-        for tex in me.uv_layers:
-            if tex.active:
-                uvtex = tex.data
-                for f in me.polygons:
-                    #check that material had an image!
-                    uvtex[f.index].image = canvas
-
         me.update()
         ob["is_prepared"] = True
         # create the uv-project modifier
@@ -181,7 +174,8 @@ def change_viewport_background_for_painting(context, clip):
     # changing from movie to image will make it updates.
     space = context.space_data
 
-    for img in space.background_images:
+    cam = context.scene.camera
+    for img in cam.background_images:
         if img.source == 'MOVIE_CLIP':
             path = img.clip.filepath
             length = img.clip.frame_duration
@@ -217,53 +211,56 @@ def set_cleanplate_brush(context, clip, canvas, ob):
     me.uv_texture_clone = me.uv_textures.get("projection")
 
 
-def configure_video_image(context, clip, image):
-    # prepare an image that uses the same parameters as the movievclip
-    image.use_auto_refresh = True
-    image.frame_duration = clip.frame_duration
-    image.frame_start = clip.frame_start
-    #image.frame_offset = clip.frame_offset
-
-
 def prepare_clean_bake_mat(context, ob, clip, size, movietype):
     data = bpy.data
-    textures = data.textures
+    images = data.images
     projection_tex = "projected texture"
     projection_mat = "projected clip material"
 
-    # create texture if needed and assign
-    if not textures.get(projection_tex):
-        textures.new(name=projection_tex, type="IMAGE")
-    tex = textures[projection_tex]
-
     # create image if needed
-    if not data.images.get(clip.name):
-        data.images.new(clip.name, size, size)
-
-    # assign image to texture
-    tex.image = data.images[clip.name]
-    tex.image.filepath = clip.filepath
-    tex.image.source = movietype
-    tex.image.colorspace_settings.name = clip.colorspace_settings.name
-
-    # configure the image
-    configure_video_image(context, clip, tex.image_user)
+    if clip.name in images:
+        projection = images[clip.name]
+    else:
+        projection = data.images.new(clip.name, size, size)
+    projection.filepath = clip.filepath
+    projection.source = movietype
+    projection.colorspace_settings.name = clip.colorspace_settings.name
 
     # create a material
-    materias = data.materials
-    mat = materials.get(projection_mat)
-    if not materials.get(projection_mat):
-        mat = materials.new(projection_mat)
+    materials = data.materials
+    if projection_mat in materials:
         mat = materials[projection_mat]
-        mat.use_shadeless = True
+    else:
+        mat = materials.new(projection_mat)
+    mat.use_nodes = True
+    tree = mat.node_tree
+    links = tree.links
+    nodes = tree.nodes
 
-    # configure material
-    if not mat.texture_slots.get(tex.name):
-        mtex = mat.texture_slots.add()
-        mtex.texture = tex
-        mtex.texture_coords = 'UV'
-        mtex.uv_layer = 'projection'
-        mtex.use_map_color_diffuse = True
+    # wipe tree
+    for n in nodes:
+        nodes.remove(n)
+
+    image = tree.nodes.new(type='ShaderNodeTexImage')
+    output = tree.nodes.new(type='ShaderNodeOutputMaterial')
+    emit = tree.nodes.new(type='ShaderNodeEmission')
+    uv = tree.nodes.new(type='ShaderNodeUVMap')
+
+    image.image = projection
+    image.image_user.use_auto_refresh = True
+    image.image_user.frame_start = clip.frame_start
+    image.image_user.frame_duration = clip.frame_duration
+
+    links.new(uv.outputs[0], image.inputs[0])
+    links.new(image.outputs[0], emit.inputs[0])
+    links.new(emit.outputs[0], output.inputs[0])
+
+    uv.location = image.location
+    uv.location += Vector((-300.0, 0.0))
+    emit.location = image.location
+    emit.location += Vector((300.0, 0.0))
+    output.location = emit.location
+    output.location += Vector((300.0, 0.0))
 
     # assign the material to material slot 0 of ob
     if not len(list(ob.material_slots)) > 0:
@@ -274,39 +271,47 @@ def prepare_clean_bake_mat(context, ob, clip, size, movietype):
 
 def ma_baker(context):
     render = context.scene.render
-    render.bake_type = 'TEXTURE'
-    render.use_antialiasing = False
-    bpy.ops.object.bake_image()
+    # bpy.ops.object.bake_image()
+    print("hello")
 
 
 def set_baked_mat(context, ob, clip, canvas, movietype):
-    textures = bpy.data.textures
     materials = bpy.data.materials
-    suffix = "_" + ob.name
-    clean_tex = "clean_texture" + suffix
-    clean_mat = "clean_material" + suffix
-
-    # create texture if needed and assign
-
-    if not textures.get(clean_tex):
-        textures.new(name=clean_tex, type="IMAGE")
-    tex = textures[clean_tex]
-
-    # assign image to texture
-    tex.image = canvas
+    clean_mat = f'clean_material_{ob.name}'
 
     # create a material
-    mat = materials.get(clean_mat)
-    if not materials.get(clean_mat):
+    if clean_mat in materials:
+        mat = materials.get(clean_mat)
+    else:
         mat = materials.new(clean_mat)
-        mat = materials[clean_mat]
-        mat.use_shadeless = True
 
-        mtex = mat.texture_slots.add()
-        mtex.texture = tex
-        mtex.texture_coords = 'UV'
-        mtex.uv_layer = 'UVMap'
-        mtex.use_map_color_diffuse = True
+    mat.use_nodes = True
+    tree = mat.node_tree
+    links = tree.links
+    nodes = tree.nodes
+
+    # wipe tree
+    for n in nodes:
+        nodes.remove(n)
+
+    image = tree.nodes.new(type='ShaderNodeTexImage')
+    output = tree.nodes.new(type='ShaderNodeOutputMaterial')
+    emit = tree.nodes.new(type='ShaderNodeEmission')
+    uv = tree.nodes.new(type='ShaderNodeUVMap')
+
+    image.image = canvas
+    uv.uv_map = "UVMap"
+
+    links.new(uv.outputs[0], image.inputs[0])
+    links.new(image.outputs[0], emit.inputs[0])
+    links.new(emit.outputs[0], output.inputs[0])
+
+    uv.location = image.location
+    uv.location += Vector((-300.0, 0.0))
+    emit.location = image.location
+    emit.location += Vector((300.0, 0.0))
+    output.location = emit.location
+    output.location += Vector((300.0, 0.0))
 
     # assign the material to material slot 0 of ob
     if not len(list(ob.material_slots)) > 0:
@@ -412,7 +417,7 @@ class VIEW3D_OT_texture_extraction_setup(bpy.types.Operator):
         movietype = clip.source
 
         # create a canvas to paint and bake on
-        if images.get(clean_name):
+        if clean_name not in images:
             canvas = images.new(clean_name, size, size)
         else:
             canvas = images[clean_name]
@@ -424,8 +429,6 @@ class VIEW3D_OT_texture_extraction_setup(bpy.types.Operator):
         ma_baker(context)
 
         set_baked_mat(context, cleaned_object, clip, canvas, movietype)
-
-        context.space_data.show_textured_solid = True
 
         return {"FINISHED"}
 
