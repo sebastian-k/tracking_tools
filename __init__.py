@@ -14,117 +14,6 @@ bl_info = {
 import bpy
 from mathutils import Vector
 
-
-def get_track_empties(context, tracks):
-    # the selected empties are assumed to be the linked tracks
-    # these ones will be the parents
-    for e in context.selected_objects:
-        if e.type != "EMPTY":
-            continue
-        tracks.append(e)
-        e.empty_draw_size = 0.05
-        e.layers = [False] + [True] + [False] * 18
-
-
-def create_hook_empties(context, tracks, hooks):
-    # create the actual hooks at the same position as the tracks
-    scene = context.scene
-    for track in tracks:
-        # create a new empty, assign name and location
-        hook = bpy.data.objects.new("CTRL_" + track.name, None)
-        hook.location = track.matrix_world.to_translation()
-        hook.empty_draw_size = 0.015
-        hook.empty_draw_type = "CUBE"
-        # link it to the scene
-        scene.objects.link(hook)
-        # add the new empty to the list of parents
-        hooks.append(hook)
-        # make the hook empty a child of the parent
-        bpy.ops.object.select_all(action='DESELECT')
-        track.select = True
-        hook.select = True
-        scene.objects.active = track
-        bpy.ops.object.parent_set()
-    bpy.ops.object.select_all(action='DESELECT')
-
-
-def get_location(hooks):
-    coords = []
-    for h in hooks:
-        coords.append(h.location * h.matrix_world)
-    return coords
-
-
-def create_canvas_object(context, name, hooks, cleanobject, cams):
-    scene = context.scene
-    from bpy_extras.io_utils import unpack_list
-    # get all locations of the hooks in the list
-    coords = get_location(hooks)
-    # create the vertices of the cleanplate mesh
-    me = bpy.data.meshes.new(name)
-    me.vertices.add(len(coords))
-    me.vertices.foreach_set("co", unpack_list(coords))
-    # create the object which is using the mesh
-    ob = bpy.data.objects.new(name, me)
-    ob.location = (0, 0, 0)
-    # link it to the scene and make it active
-    scene.objects.link(ob)
-    scene.objects.active = ob
-    ob.layers = [True] + [False] * 19
-    # go into edit mode, select all vertices and create the face
-    if not context.object.mode == "EDIT":
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.edge_face_add()
-    bpy.ops.object.mode_set(mode="OBJECT")
-
-    cleanobject.append(ob)
-
-    bpy.ops.object.select_all(action='DESELECT')
-    camera = cams[0]
-    ob.select = True
-    context.scene.objects.active = camera
-    bpy.ops.object.parent_set()
-    camera.select = False
-
-
-def hook_em_up(hooks, ob):
-    # create an yet unassigned hook modifier for each hook in the list
-    modlist = []
-    for hook in hooks:
-        modname = "Hook_" + hook.name
-        modlist.append(modname)
-        mod = ob.modifiers.new(name=modname, type="HOOK")
-        mod.object = hook
-    # now for each vertex go to edit mode, select the vertex and assign the modifier
-    verts = ob.data.vertices
-    for i in range(len(verts)):
-        # Deselect Everything in Edit Mode
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.select_all(action='DESELECT')
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        ob.data.vertices[i].select = True
-        bpy.ops.object.mode_set(mode="EDIT")
-        bpy.ops.object.hook_assign(modifier=modlist[i])
-
-    bpy.ops.object.mode_set(mode='OBJECT')
-
-
-def hooker_cam(context, cams):
-    for ob in bpy.data.objects:
-        if ob.type == "CAMERA":
-            cams.append(ob)
-    camera = cams[0]
-    camera.rotation_euler = (1.570796251296997, -0.0, 0.0)
-    camera.location = (0, -8, 2.2)
-
-
-def setup_scene(context):
-    scene = context.scene
-    scene.active_clip = context.space_data.clip
-
-
 ####### TEXTURE PROJECTION FUNCTIONS ###########
 
 
@@ -214,23 +103,20 @@ def change_viewport_background_for_painting(context, clip):
 
 
 def set_cleanplate_brush(context, clip, canvas, ob):
-    me = ob.data
-
-    paint_settings = bpy.context.tool_settings.image_paint
+    paint_settings = context.tool_settings.image_paint
     ps = paint_settings
     ps.brush = bpy.data.brushes['Clone']
     ps.brush.strength = 1
     ps.use_clone_layer = True
     ps.mode = "IMAGE"
     ps.clone_image = bpy.data.images[clip.name]
-    me.uv_layer_clone = me.uv_layers.get("projection")
+    ob.data.uv_layer_clone = ob.data.uv_layers.get("projection")
     ps.use_normal_falloff = False
 
 
 def prepare_clean_bake_mat(context, ob, clip, size, movietype):
     data = bpy.data
     images = data.images
-    projection_tex = "projected texture"
     projection_mat = "projected clip material"
 
     # create image if needed
@@ -285,7 +171,7 @@ def prepare_clean_bake_mat(context, ob, clip, size, movietype):
         ob.material_slots[0].material = mat
 
 
-def ma_baker(context):
+def texture_baker(context):
     render = context.scene.render
     # bpy.ops.object.bake_image()
     print("hello")
@@ -336,86 +222,6 @@ def setup_cleaned_material(context, ob, clip, canvas, movietype):
         ob.material_slots[0].material = mat
 
 
-def setup_clean_renderlayer(context):
-    # create override material for background layer (== Background)
-    # create new renderlayer with object as shadeless (BI) or emit (cycles) (== Cleanplate)
-    # create new Rlayer node mit Cleanplate
-    # Alpha Over it over Movieclip, before Shadows
-    pass
-
-
-def prepare_for_cycles(context):
-    context.scene.render.engine = "CYCLES"
-    cleanobjects = []
-    for ob in bpy.data.objects:
-        if "is_prepared" in ob:
-            cleanobjects.append(ob)
-    for ob in cleanobjects:
-        mat = ob.material_slots[0].material
-        mat.use_nodes = True
-
-
-######## CORNER PIN CLASSES ############
-
-
-class VIEW3D_OT_track_hooker(bpy.types.Operator):
-    bl_idname = "clip.track_hooker"
-    bl_label = "John Lee Hooker"
-
-    @classmethod
-    def poll(cls, context):
-        space = context.space_data
-        return space.type == 'CLIP_EDITOR'
-
-    def execute(self, context):
-
-        name = "canvas"
-
-        hooks = []
-        tracks = []
-        cleanobject = []
-        cams = []
-
-        setup_scene(context)
-        # setup the camera
-        hooker_cam(context, cams)
-
-        # create the empties
-        bpy.ops.clip.track_to_empty()
-
-        # collect all empties that are selected (which is automatically the case after creating the track empties)
-        get_track_empties(context, tracks)
-
-        # create empties that will be the hooks and parent them to the tracks
-        create_hook_empties(context, tracks, hooks)
-
-        # get the position of the tracks, create a new object there and parent it to the camera
-        create_canvas_object(context, name, hooks, cleanobject, cams)
-
-        # make the cleaned object active via list, to avoid confusion
-        ob = bpy.data.objects.get(cleanobject[0].name)
-        context.scene.objects.active = ob
-
-        #finally create the hooks
-        hook_em_up(hooks, ob)
-
-        return {'FINISHED'}
-
-
-class CLIP_PT_corner_hooker(bpy.types.Panel):
-    bl_idname = "clip.corner_hooker"
-    bl_label = "Corner Hoocker"
-    bl_space_type = "CLIP_EDITOR"
-    bl_region_type = "TOOLS"
-    bl_category = "Solve"
-
-    def draw(self, context):
-        layout = self.layout
-
-        row = layout.row()
-        row.operator("clip.track_hooker")
-
-
 ################ TEXTURE PROJECT CLASSES ##########################
 
 
@@ -442,7 +248,7 @@ class VIEW3D_OT_texture_extraction_setup(bpy.types.Operator):
 
         prepare_clean_bake_mat(context, cleaned_object, clip, size, movietype)
 
-        ma_baker(context)
+        texture_baker(context)
 
         setup_cleaned_material(context, cleaned_object, clip, canvas, movietype)
 
@@ -481,21 +287,6 @@ class VIEW3D_OT_cleanplate_painter_setup(bpy.types.Operator):
 
         if not context.object.mode == "TEXTURE_PAINT":
             bpy.ops.object.mode_set(mode="TEXTURE_PAINT")
-
-        return {'FINISHED'}
-
-
-class VIEW3D_OT_clean_render_switcher(bpy.types.Operator):
-    bl_idname = "scene.clean_render_switcher"
-    bl_label = "Switch Render Engine"
-
-    @classmethod
-    def poll(cls, context):
-        space = context.space_data
-        return space.type == 'VIEW_3D'
-
-    def execute(self, context):
-        prepare_for_cycles(context)
 
         return {'FINISHED'}
 
@@ -641,13 +432,10 @@ class CLIP_OT_PlaneTrackSetup(bpy.types.Operator):
 
 ########## REGISTER ############
 classes = (
-    VIEW3D_OT_clean_render_switcher,
     VIEW3D_OT_cleanplate_painter_setup,
     VIEW3D_OT_texture_extraction_setup,
-    VIEW3D_OT_track_hooker,
     VIEW3D_PT_cleanplate_creator,
     CLIP_OT_PlaneTrackSetup,
-    CLIP_PT_corner_hooker,
 )
 
 
